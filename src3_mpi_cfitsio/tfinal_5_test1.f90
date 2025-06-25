@@ -1,0 +1,447 @@
+subroutine tfinal(nphot,iter,converge)
+
+  use output_mod
+  use constants
+  use tts_mod
+  use grid_mod
+  use opacin_mod
+  implicit none
+
+  integer,intent(in) :: nphot
+  integer,intent(in) :: iter
+  character(len=3),intent(inout) :: converge
+
+  character(len=4) :: suffix,suffix1
+  character(len=100) :: filename
+
+  integer :: ir,it,ip,id,idust2,count,n,n1,n2,dcount,ii,widthr,widtht
+  integer :: rrg1,rrg2,trg1,trg2,maxii,iir,iit,nsm
+  real(8) :: dusttemp,tdiffave,told,tdiff2ave,tnew,tave,sig
+  real(8) :: Tmax
+  real(8) :: temp1,temp2
+  real(8) :: tdiffave1,tdiff2ave1,sig1
+  real(8) :: tdiffave2,tdiff2ave2,sig2
+  real(8) :: mcell1,mcell2,t_temp
+ 
+  real(8) :: gradtrarr(nrg,ntg,npg),gradttarr(nrg,ntg,npg)
+  real(8) :: rad,dr,dt,gradtr,gradtt,totsm
+  real(8) :: tdave_old(nrg,ntg,npg),tdave_temp(nrg,ntg,npg)
+  real(8) :: gradtr_temp(nrg,ntg,npg),gradtt_temp(nrg,ntg,npg)
+  real(8) :: thetsm
+  real(8) :: tdave_iter(nrg,ntg,npg)
+
+  real(8) :: x0_fp,t_fp,thet
+  integer :: ir_fp
+
+  Tmax=199999.d0
+
+  adiarr=0.d0
+  advarr=0.d0
+
+  write(suffix,'("_",I3.3)') iter
+
+  do ir=1,nrg-1
+     do it=1,ntg-1
+        do ip=1,npg-1
+           tdave_old(ir,it,ip)=tdave(ir,it,ip)
+        end do
+     end do
+  end do
+
+  sigsave=0.d0
+
+  if (iter.gt.3) then
+     maxii=20 
+  else 
+     maxii=1
+  end if
+
+  tdave_iter=0.d0
+
+  do ii=1,maxii
+
+     write(suffix1,'("_",I3.3)') ii
+     !Smooth the temperature profile for the gradient
+     widthr=15
+     widtht=15
+     tdave_temp=0.d0
+     do ir=1,nrg-1
+        do it=1,ntg-1
+           if (ir.gt.widthr.and.ir.lt.nrg-widthr) then
+              rrg1=ir-widthr
+              rrg2=ir+widthr
+           else if (ir.le.widthr) then
+              rrg1=1
+              rrg2=ir+widthr
+           else
+              rrg1=ir-widthr
+              rrg2=nrg-1
+           end if
+           if (it.gt.widtht.and.it.lt.ntg-widtht) then
+              trg1=it-widtht
+              trg2=it+widtht
+           else if (it.le.widtht) then
+              trg1=1
+              trg2=it+widtht
+           else
+              trg1=it-widtht
+              trg2=ntg-1
+           end if
+!!$           thetsm=2.d0
+!!$           call locate(thetarr,ntg,thetarr(it)-thetsm/180.d0*pi,trg1)
+!!$           call locate(thetarr,ntg,thetarr(it)+thetsm/180.d0*pi,trg2)
+           totsm=0.d0
+           nsm=0
+           do iir=rrg1,rrg2
+              do iit=trg1,trg2
+                 if (tdave(iir,iit,1).gt.0.1d0/11605.d0) then 
+                    nsm=nsm+1 
+                    totsm=totsm+tdave(iir,iit,1)
+                 end if
+              end do
+           end do
+           if (nsm.gt.0) totsm=totsm/dble(nsm)
+           tdave_temp(ir,it,:)=totsm
+           if (tdave(ir,it,1).eq.0.1d0/11605.d0) tdave_temp(ir,it,:)=0.1d0/11605.d0
+        end do
+     end do
+
+     do ir=1,nrg-1
+        rad=ravearr(ir)
+        dr=rarr(ir+1)-rarr(ir)
+        do it=1,ntg-1
+           
+           dt=thetarr(it+1)-thetarr(it)
+           if (ii.gt.1) then
+              gradtrarr(ir,it,:)=(tdave_temp(ir+1,it,1)-tdave_temp(ir,it,1))/dr
+              if (it.le.widtht) gradtrarr(ir,it,:)=(tdave_temp(ir+1,widtht+1,1)-tdave_temp(ir,widtht+1,1))/dr
+              if (ir.ge.nrg-widthr-1) gradtrarr(ir,it,:)=gradtrarr(nrg-widthr-2,it,1)
+!              if (tdave_temp(ir,it,1).eq.0.1d0/11605.d0.and.tdave_temp(ir+1,it,1).gt.0.1d0/11605.d0) &
+!                   & gradtrarr(ir,it,:)=(tdave_temp(ir+2,it,1)-tdave_temp(ir+1,it,1))/(rarr(ir+2)-rarr(ir+1))
+              if (densarr(ir,it,1,1)+densarr(ir,it,1,2)+densarr(ir,it,1,9).gt.0.d0) gradtrarr(ir,it,:)=0.d0
+           else
+              gradtrarr(ir,it,:)=0.d0
+           end if
+           if (ii.gt.1) then
+              gradttarr(ir,it,:)=(tdave_temp(ir,it+1,1)-tdave_temp(ir,it,1))/dt/rad
+              if (it.le.widtht) gradttarr(ir,it,:)=(tdave_temp(ir,widtht+2,1)-tdave_temp(ir,widtht+1,1))&
+                   & /rad/(thetarr(widtht+2)-thetarr(widtht+1))
+              if (ir.ge.nrg-widthr-1) gradttarr(ir,it,:)=gradttarr(nrg-widthr-2,it,1)
+              if (densarr(ir,it,1,1)+densarr(ir,it,1,2)+densarr(ir,it,1,9).gt.0.d0) gradttarr(ir,it,:)=0.d0
+           else
+              gradttarr(ir,it,:)=0.d0
+           end if
+        end do
+     end do
+
+!!$     do ir=1,nrg-1
+!!$        do it=1,ntg-1
+!!$           if (densarr(ir,it,1,4)+densarr(ir,it,1,10).gt.0.d0) then
+!!$              gradtrarr(ir,it,:)=min(gradtrarr(ir,it,1),0.d0)
+!!$           end if
+!!$        end do
+!!$     end do
+
+     gradtr_temp=0.d0
+     gradtt_temp=0.d0
+     widthr=15
+     widtht=0
+     do ir=1,nrg-1
+        do it=1,ntg-1
+           if (ir.gt.widthr.and.ir.lt.nrg-widthr) then
+              rrg1=ir-widthr
+              rrg2=ir+widthr
+           else if (ir.le.widthr) then
+              rrg1=1
+              rrg2=ir+widthr
+           else
+              rrg1=ir-widthr
+              rrg2=nrg-1
+           end if
+           if (it.gt.widtht.and.it.lt.ntg-widtht) then
+              trg1=it-widtht
+              trg2=it+widtht
+           else if (it.le.widtht) then
+              trg1=1
+              trg2=it+widtht
+           else
+              trg1=it-widtht
+              trg2=ntg-1
+           end if
+!!$           thetsm=2.d0
+!!$           call locate(thetarr,ntg,thetarr(it)-thetsm/180.d0*pi,trg1)
+!!$           call locate(thetarr,ntg,thetarr(it)+thetsm/180.d0*pi,trg2)
+           if (densarr(ir,it,1,4)+densarr(ir,it,1,10).gt.0.d0) then
+              totsm=0.d0
+              nsm=0
+              do iir=rrg1,rrg2
+                 do iit=trg1,trg2
+                    if (gradtrarr(iir,iit,1).lt.0.d0) then 
+                       nsm=nsm+1 
+                       totsm=totsm+gradtrarr(iir,iit,1)
+                    end if
+                 end do
+              end do
+              if (nsm.gt.0) totsm=totsm/dble(nsm)
+              gradtr_temp(ir,it,:)=totsm
+           else
+              gradtr_temp(ir,it,:)=sum(gradtrarr(rrg1:rrg2,trg1:trg2,1))/dble(rrg2-rrg1+1)/dble(trg2-trg1+1)              
+           end if
+           gradtt_temp(ir,it,:)=sum(gradttarr(rrg1:rrg2,trg1:trg2,1))/dble(rrg2-rrg1+1)/dble(trg2-trg1+1)
+        end do
+     end do
+     gradtrarr=gradtr_temp
+     gradttarr=gradtt_temp
+!!$     call output_grid('gradtr'//suffix//suffix1,gradtrarr)
+!!$     call output_grid('gradtt'//suffix//suffix1,gradttarr)
+     if (ifprint) then
+        call output_grid('gradtr',gradtrarr)
+        call output_grid('gradtt',gradttarr)
+     end if
+        
+     tdiffave=0.d0
+     tdiff2ave=0.d0
+     n=0
+
+     ip=1
+
+     do ir=1,nrg-1
+        do it=1,(ntg-1)/2
+           
+           if (ii.gt.1) told=tdave(ir,it,ip)
+        
+           tdave(ir,it,ip)=0.1d0/11605.d0
+           dcount=0
+           gradtr=gradtrarr(ir,it,ip)
+           gradtt=gradttarr(ir,it,ip)
+           do id=1,ndg+2
+              if (.not.is_sg(id).and.densarr(ir,it,ip,id).gt.0.d0) then
+                 dcount=dcount+1
+                 idust2=id
+              
+                 if (.not.diffus(ir,it,ip)) then
+                    mcell1=(densarr(ir,it,ip,id)*vcell(ir,it,ip))**0.25d0
+                    mcell2=(densarr(ir,ntg-it,ip,id)*vcell(ir,it,ip))**0.25d0
+                    temp1=dusttemp(ir,it,ip,dtauabs(ir,it,ip), &
+                         & tdust(ir,it,ip),rstar,tstarave,nphot,idust2,mcell1, &
+                         gradtr,gradtt)
+                    temp2=dusttemp(ir,ntg-it,ip,dtauabs(ir,ntg-it,ip), &
+                         & tdust(ir,ntg-it,ip),rstar,tstarave,nphot,idust2,mcell2, &
+                         gradtr,gradtt)
+                    tdave(ir,it,ip)=(temp1+temp2)/2.d0
+
+                 else
+                    tdave(ir,it,ip)=(tdust(ir,it,ip)+tdust(ir,ntg-it,ip))/2.d0
+
+                 end if
+                 
+                 if (tdave(ir,it,ip)*11605.d0.ge.Tmax) tdave(ir,it,ip)=Tmax/11605.d0
+              
+              end if
+           end do
+           tnew=tdave(ir,it,ip)
+
+           if (dcount.gt.1) then
+              print*,'more than one non-zero densities'
+              stop
+           end if
+
+           if (tnew.ne.told.and.tnew.gt.0.1d0/11605.d0.and.told.gt.0.1d0/11605.d0) then
+              tdiffave=abs((tnew-told)/tnew)+tdiffave
+              tdiff2ave=((tnew-told)/tnew)**2+tdiff2ave
+              n=n+1
+           end if
+
+        end do
+     end do
+             
+     tdiffave=tdiffave/dble(n)
+     tdiff2ave=tdiff2ave/dble(n)
+
+     sig=sqrt(tdiff2ave-tdiffave**2.d0)
+
+     if (ifprint) print*,sig,(sigsave-sig)/sig
+
+     sigsave=sig
+
+     do ir=1,nrg-1
+        do it=(ntg+1)/2,ntg-1
+           tdave(ir,it,ip)=tdave(ir,ntg-it,ip)
+        end do
+     end do
+
+     if (npg.gt.2) then
+        do ir=1,nrg-1
+           do it=1,ntg-1
+              do ip=2,npg-1
+                 tdave(ir,it,ip)=tdave(ir,it,1)
+              end do
+           end do
+        end do
+     end if
+     
+!!$     tdave=tdave*11605.d0
+!!$     call output_grid('tdave'//suffix//suffix1,tdave)
+!!$     call output_grid('adiarr'//suffix//suffix1,adiarr)
+!!$     call output_grid('advarr'//suffix//suffix1,advarr)
+!!$     tdave=tdave/11605.d0
+
+     if (maxii.gt.10.and.ii.gt.10) tdave_iter=tdave_iter+tdave
+     
+  end do
+
+  if (maxii.gt.10) tdave=tdave_iter/dble(maxii-10)
+
+  tdiffave=0.d0
+  tdiff2ave=0.d0
+  n=0
+
+  tdiffave1=0.d0
+  tdiff2ave1=0.d0
+  n1=0
+
+  tdiffave2=0.d0
+  tdiff2ave2=0.d0
+  n2=0
+     
+  do ir=1,nrg-1
+     do it=1,(ntg-1)/2
+
+        told=tdave_old(ir,it,1)
+        tnew=tdave(ir,it,1)
+
+        if (tnew.ne.told.and.tnew.gt.0.1d0/11605.d0.and.told.gt.0.1d0/11605.d0) then
+           tdiffave=abs((tnew-told)/tnew)+tdiffave
+           tdiff2ave=((tnew-told)/tnew)**2+tdiff2ave
+           n=n+1
+        end if
+        
+        if ((.not.diffus(ir,it,ip)).and.tnew.gt.0.1d0/11605.d0.and.told.gt.0.1d0/11605.d0) then
+           tdiffave1=abs((tnew-told)/tnew)+tdiffave1
+           tdiff2ave1=((tnew-told)/tnew)**2+tdiff2ave1
+           n1=n1+1
+        end if
+              
+        if (rarr(ir)/autors.lt.5.d0.and.tnew.gt.0.1d0/11605.d0.and.told.gt.0.1d0/11605.d0) then
+           tdiffave2=abs((tnew-told)/tnew)+tdiffave2
+           tdiff2ave2=((tnew-told)/tnew)**2+tdiff2ave2
+           n2=n2+1
+        end if
+
+     end do
+  end do
+
+  if (converge.eq.'no') then
+     
+     tdiffave=tdiffave/dble(n)
+     tdiff2ave=tdiff2ave/dble(n)
+     
+     tdiffave1=tdiffave1/dble(n1)
+     tdiff2ave1=tdiff2ave1/dble(n1)
+   
+     tdiffave2=tdiffave2/dble(n2)
+     tdiff2ave2=tdiff2ave2/dble(n2)
+          
+     if (ifprint) print*,'tdiffave',tdiffave,tdiffave1,tdiffave2
+     sig=sqrt(tdiff2ave-tdiffave**2.d0)
+     sig1=sqrt(tdiff2ave1-tdiffave1**2.d0)
+     sig2=sqrt(tdiff2ave2-tdiffave2**2.d0)
+     if (ifprint) print*,'old, new std dev',sigsave,sig,sigsave1,sig1,sigsave2,sig2
+     
+     if (ifprint) print*,'fractional change in tdiffave ',(tdiffavesave-tdiffave)/tdiffave,(tdiffavesave1-tdiffave1)/tdiffave1,(tdiffavesave2-tdiffave2)/tdiffave2
+     
+     if (ifprint) print*,'fractional change in std dev ',(sigsave-sig)/sig,(sigsave1-sig1)/sig1,(sigsave2-sig2)/sig2
+
+     if (abs(sigsave-sig)/sig.lt.0.25d0) converge='yes'
+     
+     sigsave=sig
+     tdiffavesave=tdiffave
+     
+     sigsave1=sig1
+     tdiffavesave1=tdiffave1
+     
+     sigsave2=sig2
+     tdiffavesave2=tdiffave2
+     
+     if (ifprint) print*,'tfinal: converge = ',converge
+     
+  end if
+   
+!!$  tdust = tdust*11605.d0
+!!$
+!!$  call output_grid('tarr'//suffix,tdust)
+!!$ 
+!!$  tdust = tdust/11605.d0
+
+  ! see how things are looking
+  ! see how things are looking
+  do id=1,ndg+2
+     write(filename,'("tave1",I0,".dat")') id
+     open(unit=15,file=filename,status='unknown')
+     write(15,*) 'index,r(rstar),r(au),Tave(r)'
+     do ir=1,nrg-1
+        tave=0.d0
+        count=0
+        do it=1,ntg-1
+           do ip=1,npg-1
+              if (.not.is_sg(id).and.densarr(ir,it,ip,id).gt.0.d0) then
+                 t_temp=tdust(ir,it,ip)
+              else
+                 t_temp=0.1d0/11605.d0
+              end if
+              tave=t_temp+tave
+              count=count+1
+           end do
+        end do
+        tave=tave/dble(count)
+        write(15,'(i10,3(2x,e13.6),3(f10.4))') ir,ravearr(ir),ravearr(ir)/autors,tave*11605.d0
+     end do
+     close(15)
+  end do
+
+!!$  do ir=1,nrg-1
+!!$     do it=1,ntg-1
+!!$        do ip=1,npg-1
+!!$           do id=1,ndg+2
+!!$              if (.not.is_sg(id).and.densarr(ir,it,ip,id).gt.0.d0) then
+!!$                 tdust(ir,it,ip,id)=tdave(ir,it,ip)
+!!$              else
+!!$                 tdust(ir,it,ip,id)=0.1d0/11605.d0
+!!$              end if
+!!$           end do
+!!$        end do
+!!$     end do
+!!$  end do
+!!$  tdust=tdust*11605.d0
+!!$  call output_grid('tarr2'//suffix,tdust)
+!!$  tdust=tdust/11605.d0
+
+  tdave=tdave*11605.d0
+  if (ifprint) call output_grid('tdave'//suffix,tdave)
+  tdave=tdave/11605.d0
+
+!!$  ir_fp=1
+!!$  do ir=1,nrg
+!!$     thet=acos(zdisk(ir)/ravearr(ir))
+!!$     call locate(thetarr,ntg-1,thet,it)
+!!$     if (ravearr(ir)*cos(thetarr(it)).gt.zdisk(ir)) it=it+1
+!!$     t_fp=tdave(ir,it,1)*11605.d0
+!!$     print*,ir,it,t_fp
+!!$     if (t_fp.gt.1600.d0) then
+!!$        ir_fp=ir
+!!$     end if
+!!$  end do
+!!$  x0_fp=ravearr(ir_fp)
+!!$  x0_fp=log(x0_fp)/log(x_max0)
+!!$
+!!$  print*,'ir_fp,r_fp,x0_fp',ir_fp,ravearr(ir_fp)/autors,x0_fp
+
+  if (ifprint) then
+     call output_grid('adiarr',adiarr)
+     call output_grid('advarr',advarr)
+  end if
+     
+  if (ifprint) print*,'done with tfinal'
+
+  return
+end subroutine tfinal
